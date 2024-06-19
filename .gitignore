@@ -1,0 +1,5 @@
+*.sofa
+P*-P*/
+data/
+.vscode/
+*.pyc
