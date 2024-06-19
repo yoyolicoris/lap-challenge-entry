@@ -4,6 +4,11 @@ import numpy as np
 from typing import Tuple
 from scipy.interpolate import griddata
 from pyfar import Signal, Coordinates
+import argparse
+from pathlib import Path
+from pyfar.io import read_sofa
+from pyfar import rad2deg
+from sofar import write_sofa, Sofa
 
 from toa import toa, get_rigid_params, toa_model
 
@@ -106,7 +111,7 @@ def time_align_upsample(
     return upsampled_hrir, pred_shifts
 
 
-def lv4_upsample(
+def upsample_v1(
     hrir: Signal,
     input_coords: Coordinates,
     target_coords: Coordinates,
@@ -118,6 +123,20 @@ def lv4_upsample(
 ):
     sr = hrir.sampling_rate
     input_xyz = input_coords.cartesian
+
+    est_toa = toa(
+        hrir=hrir.time,
+        xyz=input_coords.cartesian,
+        sr=sr,
+        **toa_kwargs,
+    )
+    shifts = est_toa
+
+    hrtf = hrir.freq_raw
+    freqs = hrir.frequencies
+    aligned_hrtf = hrtf * np.exp(2j * np.pi * freqs / sr * shifts[..., None])
+
+    sph_coords = input_coords
 
     if lr_augment:
         # augment input grid
@@ -137,7 +156,6 @@ def lv4_upsample(
             % 360
         )
         _, unique_indices = np.unique(aug_sph_coords, return_index=True, axis=0)
-        print(_)
         num_aug_points = np.count_nonzero(unique_indices >= input_xyz.shape[0])
 
         print(
@@ -148,32 +166,21 @@ def lv4_upsample(
                 (input_xyz, input_xyz * np.array([1, -1, 1])), axis=0
             )
             input_xyz = aug_xyz[unique_indices]
-            aug_hrir = np.concatenate((hrir.time, np.fliplr(hrir.time)), axis=0)
-            hrir = Signal(aug_hrir[unique_indices], sr)
-            input_coords = Coordinates(
+            aug_aligned_hrtf = np.concatenate(
+                (aligned_hrtf, np.fliplr(aligned_hrtf)), axis=0
+            )
+            sph_coords = Coordinates(
                 points_1=input_xyz[:, 0],
                 points_2=input_xyz[:, 1],
                 points_3=input_xyz[:, 2],
             )
-
-    est_toa = toa(
-        hrir=hrir.time,
-        xyz=input_coords.cartesian,
-        sr=sr,
-        **toa_kwargs,
-    )
-    offset = est_toa.min(0)
-    shifts = est_toa - offset
-
-    hrtf = hrir.freq_raw
-    freqs = hrir.frequencies
-    aligned_hrtf = hrtf * np.exp(2j * np.pi * freqs / sr * shifts[..., None])
+            aligned_hrtf = aug_aligned_hrtf[unique_indices]
 
     sparse_sph = sht_lstsq_reg(
         aligned_hrtf.reshape(aligned_hrtf.shape[0], -1),
         sph_order,
-        input_coords.azimuth,
-        input_coords.colatitude,
+        sph_coords.azimuth,
+        sph_coords.colatitude,
         "complex",
         eps=eps,
     )
@@ -190,7 +197,7 @@ def lv4_upsample(
             sr=sr,
             **rigid_params,
         )
-        pred_shifts = pred_toa - offset
+        pred_shifts = pred_toa
     else:
         pred_shifts = inverse_sht(
             sht_lstsq_reg(
@@ -218,3 +225,64 @@ def lv4_upsample(
         ),
         pred_shifts,
     )
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Upsample HRIRs")
+    parser.add_argument("input_dir", type=str, help="Input directory")
+    parser.add_argument("output_dir", type=str, help="Output directory")
+    parser.add_argument(
+        "--sph-order", type=int, default=2, help="Spherical harmonics order"
+    )
+    parser.add_argument("--eps", type=float, default=1e-5, help="Regularization factor")
+    parser.add_argument(
+        "--lr-augment", action="store_true", help="Left-right augmentation"
+    )
+    parser.add_argument(
+        "--use-rigid-toa", action="store_true", help="Use rigid toa alignment"
+    )
+    parser.add_argument(
+        "--oversampling", type=int, default=10, help="Oversampling factor"
+    )
+    parser.add_argument(
+        "--theta", type=float, default=8, help="Exponent for toa weighting"
+    )
+    parser.add_argument("--verbose", action="store_true", help="Print verbose output")
+    parser.add_argument(
+        "--ref",
+        type=str,
+        default="/Users/ycy/Documents/lap-challenge/SONICOM/P0001-P0010/P0001/HRTF/HRTF/48kHz/P0001_FreeFieldCompMinPhase_48kHz.sofa",
+        help="Reference sofa file",
+    )
+    args = parser.parse_args()
+
+    input_dir = Path(args.input_dir)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(exist_ok=True)
+
+    _, ref_coords, _ = read_sofa(args.ref)
+
+    for f in input_dir.glob("*.sofa"):
+        hrir, coords, _ = read_sofa(f)
+        pred_hrir, _ = upsample_v1(
+            hrir,
+            coords,
+            ref_coords,
+            sph_order=args.sph_order,
+            eps=args.eps,
+            lr_augment=args.lr_augment,
+            use_rigid_toa=args.use_rigid_toa,
+            oversampling=args.oversampling,
+            theta=args.theta,
+            verbose=args.verbose,
+        )
+
+        sofa = Sofa("SimpleFreeFieldHRIR")
+        sofa.Data_IR = pred_hrir.time
+        sofa.SourcePosition = rad2deg(ref_coords.spherical_elevation)
+        sofa.Data_SamplingRate = hrir.sampling_rate
+        write_sofa(output_dir / f.name, sofa)
+
+
+if __name__ == "__main__":
+    main()
