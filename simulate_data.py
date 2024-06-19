@@ -25,7 +25,7 @@ def main():
         out_sofa.Data_IR = sofa.Data_IR[LAP_MASK_INDEX[args.lvl - 1]]
         out_sofa.SourcePosition = sofa.SourcePosition[LAP_MASK_INDEX[args.lvl - 1]]
         out_sofa.Data_SamplingRate = sofa.Data_SamplingRate
-        write_sofa(output_dir / f.name, sofa)
+        write_sofa(output_dir / f.name, out_sofa)
 
 
 if __name__ == "__main__":
