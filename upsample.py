@@ -3,6 +3,7 @@ from spaudiopy.utils import sph2cart, cart2sph
 import numpy as np
 from typing import Tuple
 from scipy.interpolate import griddata
+from scipy.signal import hilbert
 from pyfar import Signal, Coordinates
 import argparse
 from pathlib import Path
@@ -119,6 +120,7 @@ def upsample_v1(
     eps: float = 1e-5,
     lr_augment: bool = False,
     use_rigid_toa: bool = False,
+    minphase_approx: bool = False,
     **toa_kwargs,
 ):
     sr = hrir.sampling_rate
@@ -175,6 +177,11 @@ def upsample_v1(
                 points_3=input_xyz[:, 2],
             )
             aligned_hrtf = aug_aligned_hrtf[unique_indices]
+
+    if minphase_approx:
+        log_mag = np.log(aligned_hrtf).real
+        min_phase = -np.imag(hilbert(log_mag))
+        aligned_hrtf = np.exp(log_mag + 1j * min_phase)
 
     sparse_sph = sht_lstsq_reg(
         aligned_hrtf.reshape(aligned_hrtf.shape[0], -1),
@@ -247,6 +254,9 @@ def main():
     parser.add_argument(
         "--theta", type=float, default=8, help="Exponent for toa weighting"
     )
+    parser.add_argument(
+        "--minphase", action="store_true", help="Use minphase approximation"
+    )
     parser.add_argument("--verbose", action="store_true", help="Print verbose output")
     parser.add_argument(
         "--ref",
@@ -274,6 +284,7 @@ def main():
             use_rigid_toa=args.use_rigid_toa,
             oversampling=args.oversampling,
             theta=args.theta,
+            minphase_approx=args.minphase,
             verbose=args.verbose,
         )
 
